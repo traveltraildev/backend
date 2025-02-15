@@ -36,34 +36,35 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || f8ad5f2de9357de19ec8e7b35ac06f8
 const requireAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   
-  if (!token) return res.status(401).json({ message: "Authentication required" });
-
-  try {
-    req.admin = jwt.verify(token, ADMIN_SECRET);
-    next();
-  } catch (error) {
-    res.status(401).json({ message: "Invalid token" });
+  if (!token) {
+    return res.status(401).json({ message: "Authentication required" });
   }
+
+  jwt.verify(token, process.env.ADMIN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+    req.admin = decoded;
+    next();
+  });
 };
   // Admin Login
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   
   // Replace with your admin credentials
-  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-  const adminPassword = process.env.ADMIN_PASSWORD || 'admin1233';
+  const adminUsername = process.env.ADMIN_USERNAME;
+  const storedHash = process.env.ADMIN_PASSWORD_HASH; // Store hashed password in .env
+  
+  if (!adminUsername || !storedHash) {
+    return res.status(500).json({ message: "Admin credentials not configured" });
+  }
 
-  const adminPasswordHash = process.env.ADMIN_PASSWORD || 
-  bcrypt.hashSync('admin1233', 10); // Store the HASHED password in .env
-
-
-
-  if (username !== adminUsername || !bcrypt.compareSync(password, adminPasswordHash)) {
-
+  if (username !== adminUsername || !bcrypt.compareSync(password, storedHash)) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
-  const token = jwt.sign({ username }, ADMIN_SECRET, { expiresIn: '2h' });
+  const token = jwt.sign({ username }, process.env.ADMIN_SECRET, { expiresIn: '2h' });
   res.json({ token });
 });
 app.get('/api/admin/check-auth', requireAuth, (req, res) => {
