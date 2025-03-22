@@ -269,12 +269,10 @@ app.post("/api/trips", requireAuth, async (req, res) => {
 
     const result = await tripsCollection.insertOne(tripDataToInsert);
     console.log("Trip inserted result:", result); // More specific log message
-    res
-      .status(201)
-      .json({
-        message: "Trip package added successfully!",
-        tripId: result.insertedId,
-      });
+    res.status(201).json({
+      message: "Trip package added successfully!",
+      tripId: result.insertedId,
+    });
   } catch (error) {
     console.error("Error adding new trip package:", error);
     res.status(500).json({ message: "Failed to add new trip package." });
@@ -331,6 +329,49 @@ app.get("/api/accommodations", requireAuth, async (req, res) => {
     });
   }
 });
+
+// PUT endpoint to update a ACCOMMODATIONS by ID
+app.put(
+  "/api/accommodations/:accommodationId",
+  requireAuth,
+  async (req, res) => {
+    const accommodationId = req.params.accommodationId;
+    const updatedData = req.body;
+
+    // Remove immutable fields
+    delete updatedData._id; // Prevent updating MongoDB's _id
+
+    // Basic validation
+    if (
+      !updatedData ||
+      !updatedData.name ||
+      typeof updatedData.price !== "number"
+    ) {
+      return res.status(400).json({ message: "Invalid accommodation data" });
+    }
+
+    try {
+      const result = await db
+        .collection("accommodations")
+        .updateOne(
+          { _id: new ObjectId(accommodationId) },
+          { $set: updatedData }
+        );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ message: "Accommodation not found" });
+      }
+
+      res.json({
+        message: "Accommodation updated successfully",
+        modifiedCount: result.modifiedCount,
+      });
+    } catch (error) {
+      console.error("Error updating accommodation:", error);
+      res.status(500).json({ message: "Failed to update accommodation" });
+    }
+  }
+);
 
 // PUT endpoint to update a trip by ID
 app.put("/api/trips/:tripId", requireAuth, async (req, res) => {
