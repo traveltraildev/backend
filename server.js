@@ -102,25 +102,66 @@ const requireAuth = (req, res, next) => {
     try {
       const { username, password } = req.body;
       
-      if (!username || !password) {
-        return res.status(400).json({ message: "Missing credentials" });
+      // Enhanced validation
+      if (!username?.trim() || !password?.trim()) {
+        return res.status(400).json({
+          success: false,
+          code: "MISSING_CREDENTIALS",
+          message: "Username and password are required"
+        });
       }
   
-      if (username !== process.env.ADMIN_USERNAME ||
-          !bcrypt.compareSync(password, process.env.ADMIN_PASSWORD_HASH)) {
-        return res.status(401).json({ message: "Invalid credentials" });
+      // Verify environment variables exist
+      if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD_HASH) {
+        console.error('Admin credentials not configured');
+        return res.status(500).json({
+          success: false,
+          code: "SERVER_ERROR",
+          message: "Server configuration error"
+        });
       }
   
-      const token = jwt.sign({ username }, process.env.ADMIN_SECRET, { 
-        expiresIn: '2h',
-        algorithm: 'HS256' // Explicitly set algorithm
+      // Trim inputs for comparison
+      const cleanUsername = username.trim();
+      const cleanPassword = password.trim();
+      
+      // Validate credentials
+      const usernameValid = cleanUsername === process.env.ADMIN_USERNAME;
+      const passwordValid = bcrypt.compareSync(cleanPassword, process.env.ADMIN_PASSWORD_HASH);
+  
+      if (!usernameValid || !passwordValid) {
+        return res.status(401).json({
+          success: false,
+          code: "INVALID_CREDENTIALS",
+          message: "Invalid username or password"
+        });
+      }
+  
+      // Generate token
+      const token = jwt.sign(
+        { username: cleanUsername },
+        process.env.ADMIN_SECRET,
+        { 
+          expiresIn: '2h',
+          algorithm: 'HS256'
+        }
+      );
+  
+      res.json({
+        success: true,
+        adminToken: token,
+        user: {
+          username: cleanUsername
+        }
       });
-  
-      res.json({ success: true,
-        adminToken: token });
+      
     } catch (error) {
       console.error('Login error:', error);
-      res.status(500).json({ message: "Server error during authentication" });
+      res.status(500).json({
+        success: false,
+        code: "SERVER_ERROR",
+        message: "Internal server error"
+      });
     }
   });
 app.get('/api/admin/check-auth', requireAuth, (req, res) => {
