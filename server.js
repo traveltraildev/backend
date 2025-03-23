@@ -280,7 +280,7 @@ app.post("/api/trips", requireAuth, async (req, res) => {
 });
 
 // NEW API ENDPOINT - GET /api/trips - to fetch all trip packages
-app.get("/api/trips", requireAuth, async (req, res) => {
+app.get("/api/trips", async (req, res) => {
   // GET endpoint for all trips
   try {
     const tripsCollection = db.collection("trips");
@@ -312,12 +312,19 @@ app.get("/api/trips/:tripId", async (req, res) => {
   }
 });
 // NEW API ENDPOINT - GET ACCOMMODATIONS
-app.get("/api/accommodations", requireAuth, async (req, res) => {
+app.get("/api/accommodations", async (req, res) => {
   try {
     const accommodations = await db
       .collection("accommodations")
       .find({})
-      .project({ _id: 1, name: 1, price: 1, roomType: 1 }) // Optimize response
+      .project({
+        _id: 1,
+        name: 1,
+        price: 1,
+        roomType: 1,
+        maxOccupancy: 1,
+        images: 1,
+      }) // Optimize response
       .toArray();
 
     res.json({ success: true, data: accommodations });
