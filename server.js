@@ -176,6 +176,46 @@ app.get("/api/admin/check-auth", requireAuth, (req, res) => {
 });
 // API Endpoints
 
+// NEW API ENDPOINT - GET /api/accommodations/filters/destinations
+app.get("/api/accommodations/filters/destinations", async (req, res) => {
+  try {
+    const accommodationsCollection = db.collection("accommodations");
+    const distinctDestinations = await accommodationsCollection.distinct("destination");
+    res.json(distinctDestinations);
+  } catch (error) {
+    console.error("Error fetching distinct destinations:", error);
+    res.status(500).json({ message: "Failed to fetch destinations" });
+  }
+});
+
+// NEW API ENDPOINT - GET /api/accommodations/filters/themes
+app.get("/api/accommodations/filters/themes", async (req, res) => {
+  try {
+    const accommodationsCollection = db.collection("accommodations");
+    const distinctThemes = await accommodationsCollection.distinct("themes");
+    // Flatten the array in case themes are stored as arrays
+    const flattenedThemes = distinctThemes.flat();
+    res.json(flattenedThemes);
+  } catch (error) {
+    console.error("Error fetching distinct themes:", error);
+    res.status(500).json({ message: "Failed to fetch themes" });
+  }
+});
+
+// NEW API ENDPOINT - GET /api/accommodations/filters/amenities
+app.get("/api/accommodations/filters/amenities", async (req, res) => {
+  try {
+    const accommodationsCollection = db.collection("accommodations");
+    const distinctAmenities = await accommodationsCollection.distinct("amenities");
+    // Flatten the array in case amenities are stored as arrays
+    const flattenedAmenities = distinctAmenities.flat();
+    res.json(flattenedAmenities);
+  } catch (error) {
+    console.error("Error fetching distinct amenities:", error);
+    res.status(500).json({ message: "Failed to fetch amenities" });
+  }
+});
+
 // GET endpoint to fetch CMS page content by key
 app.get("/api/cms/pages/:pageKey", async (req, res) => {
   // GET endpoint for CMS pages
