@@ -216,6 +216,62 @@ app.get("/api/accommodations/filters/amenities", async (req, res) => {
   }
 });
 
+// NEW API ENDPOINTS FOR TRIP FILTERS
+
+// GET endpoint to fetch distinct trip destinations
+app.get("/api/trips/filters/destinations", async (req, res) => {
+  try {
+    const tripsCollection = db.collection("trips");
+    const distinctDestinations = await tripsCollection.distinct("destination");
+    res.json(distinctDestinations);
+  } catch (error) {
+    console.error("Error fetching distinct trip destinations:", error);
+    res.status(500).json({ message: "Failed to fetch trip destinations" });
+  }
+});
+
+// GET endpoint to fetch distinct trip themes
+app.get("/api/trips/filters/themes", async (req, res) => {
+  try {
+    const tripsCollection = db.collection("trips");
+    const distinctThemes = await tripsCollection.distinct("themes");
+    // Flatten the array in case themes are stored as arrays
+    const flattenedThemes = distinctThemes.flat();
+    res.json(flattenedThemes);
+  } catch (error) {
+    console.error("Error fetching distinct trip themes:", error);
+    res.status(500).json({ message: "Failed to fetch trip themes" });
+  }
+});
+
+// GET endpoint to fetch distinct trip inclusions
+app.get("/api/trips/filters/inclusions", async (req, res) => {
+  try {
+    const tripsCollection = db.collection("trips");
+    const distinctInclusions = await tripsCollection.distinct("inclusions");
+    // Flatten the array in case inclusions are stored as arrays
+    const flattenedInclusions = distinctInclusions.flat();
+    res.json(flattenedInclusions);
+  } catch (error) {
+    console.error("Error fetching distinct trip inclusions:", error);
+    res.status(500).json({ message: "Failed to fetch trip inclusions" });
+  }
+});
+
+// GET endpoint to fetch distinct trip exclusions
+app.get("/api/trips/filters/exclusions", async (req, res) => {
+  try {
+    const tripsCollection = db.collection("trips");
+    const distinctExclusions = await tripsCollection.distinct("exclusions");
+    // Flatten the array in case exclusions are stored as arrays
+    const flattenedExclusions = distinctExclusions.flat();
+    res.json(flattenedExclusions);
+  } catch (error) {
+    console.error("Error fetching distinct trip exclusions:", error);
+    res.status(500).json({ message: "Failed to fetch trip exclusions" });
+  }
+});
+
 // GET endpoint to fetch CMS page content by key
 app.get("/api/cms/pages/:pageKey", async (req, res) => {
   // GET endpoint for CMS pages
