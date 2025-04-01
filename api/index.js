@@ -18,7 +18,10 @@ if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
 
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      "https://traveltrail-frontend.vercel.app",
+    ],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -26,8 +29,16 @@ app.use(
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const client = new MongoClient(process.env.MONGODB_URI);
+const client = new MongoClient(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 let db;
+
+if (!process.env.MONGODB_URI) {
+  console.error("FATAL ERROR: MONGODB_URI is not defined in .env");
+  process.exit(1);
+}
 
 async function connectToDatabase() {
   try {
@@ -40,7 +51,7 @@ async function connectToDatabase() {
   }
 }
 
-connectToDatabase();
+// connectToDatabase();
 
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -180,7 +191,9 @@ app.get("/api/admin/check-auth", requireAuth, (req, res) => {
 app.get("/api/accommodations/filters/destinations", async (req, res) => {
   try {
     const accommodationsCollection = db.collection("accommodations");
-    const distinctDestinations = await accommodationsCollection.distinct("destination");
+    const distinctDestinations = await accommodationsCollection.distinct(
+      "destination"
+    );
     res.json(distinctDestinations);
   } catch (error) {
     console.error("Error fetching distinct destinations:", error);
@@ -206,7 +219,9 @@ app.get("/api/accommodations/filters/themes", async (req, res) => {
 app.get("/api/accommodations/filters/amenities", async (req, res) => {
   try {
     const accommodationsCollection = db.collection("accommodations");
-    const distinctAmenities = await accommodationsCollection.distinct("amenities");
+    const distinctAmenities = await accommodationsCollection.distinct(
+      "amenities"
+    );
     // Flatten the array in case amenities are stored as arrays
     const flattenedAmenities = distinctAmenities.flat();
     res.json(flattenedAmenities);
@@ -650,7 +665,22 @@ app.post("/api/sheets-proxy", async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Backend server listening on port ${port}`);
-});
+async function startServer() {
+  try {
+    await connectToDatabase();
+
+    app.listen(port, () => {
+      console.log(`Backend server listening on port ${port}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+// app.listen(port, () => {
+//   console.log(`Backend server listening on port ${port}`);
+// });
 // --- END OF FILE backend/server.js ---raries is already expected as JSON string from frontend
