@@ -9,7 +9,7 @@ const jwt = require("jsonwebtoken");
 
 const app = express();
 const port = process.env.PORT || 5000;
-
+const saltRounds = 10; // Recommended value for security
 // Validate environment variables on startup
 if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
   console.error("FATAL ERROR: ADMIN_SECRET not configured or too short");
@@ -264,7 +264,7 @@ app.get("/api/trips/filters/inclusions", async (req, res) => {
   try {
     const tripsCollection = db.collection("trips");
     const distinctInclusions = await tripsCollection.distinct("inclusions");
-    // Flatten the array in case inclusions are stored as arrays
+    // Flatten the array in case inclusions are stored as arraysf
     const flattenedInclusions = distinctInclusions.flat();
     res.json(flattenedInclusions);
   } catch (error) {
@@ -633,6 +633,192 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Error adding accommodation:", error);
     res.status(500).json({ message: "Failed to add accommodation" });
+  }
+});
+
+// GET /api/users/profile - Fetch user profile
+app.get('/api/users/profile', async (req, res) => {
+  try {
+    const token = req.headers.authorization.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
+    
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ username: decoded.username });
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    const { password, ...userWithoutPassword } = user;
+    res.json({ user: userWithoutPassword });
+  } catch (error) {
+    console.error('Error fetching profile:', error);
+    res.status(401).json({ message: 'Authentication failed' });
+  }
+});
+
+// PUT /api/users/profile - Update user profile
+app.put('/api/users/profile', requireAuth, async (req, res) => {
+  try {
+    const usersCollection = db.collection('users');
+    const result = await usersCollection.updateOne(
+      { username: req.admin.username },
+      { $set: req.body }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json({ message: 'Profile updated successfully' });
+  } catch (error) {
+    console.error('Error updating user profile:', error);
+    res.status(500).json({ message: 'Failed to update user profile' });
+  }
+});
+
+// PUT /api/users/password - Change user password
+app.put('/api/users/password', requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ username: req.admin.username });
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const passwordMatch = bcrypt.compareSync(currentPassword, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Current password is incorrect' });
+    }
+
+    // Use the defined saltRounds here
+    const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
+    await usersCollection.updateOne(
+      { username: req.admin.username },
+      { $set: { password: hashedPassword } }
+    );
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ message: 'Failed to change password' });
+  }
+});
+
+
+// GET /api/bookings/history - Get user's booking history
+app.get('/api/bookings/history', requireAuth, async (req, res) => {
+  try {
+    const bookingsCollection = db.collection('bookings');
+    const bookings = await bookingsCollection.find({
+      userId: new ObjectId(req.admin.userId)
+    }).toArray();
+
+    // Fetch trip details for each booking
+    const tripsCollection = db.collection('trips');
+    const tripPromises = bookings.map(async (booking) => {
+      const trip = await tripsCollection.findOne({ _id: new ObjectId(booking.tripId) });
+      return { ...booking, tripName: trip?.name };
+    });
+
+    const enrichedBookings = await Promise.all(tripPromises);
+    res.json(enrichedBookings);
+  } catch (error) {
+    console.error('Error fetching booking history:', error);
+    res.status(500).json({ message: 'Failed to fetch booking history' });
+  }
+});
+
+
+app.post('/api/users/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ username });
+    
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+    
+    const passwordMatch = bcrypt.compareSync(password, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+    
+    const token = jwt.sign(
+      { username: user.username, userId: user._id },
+      process.env.ADMIN_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    res.json({ token });
+  } catch (error) {
+    console.error('Error during user login:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.post('/api/users/register', async (req, res) => {
+  const { username, password, email, name } = req.body;
+
+  try {
+    const usersCollection = db.collection('users');
+    const existingUser = await usersCollection.findOne({ username });
+    
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+    
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    
+    const result = await usersCollection.insertOne({
+      username,
+      password: hashedPassword,
+      email,
+      name,
+      createdAt: new Date()
+    });
+    
+    res.status(201).json({ message: 'User created successfully' });
+  } catch (error) {
+    console.error('Error during registration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/bookings - Create a new booking
+app.post('/api/bookings', requireAuth, async (req, res) => {
+  try {
+    const { tripId, startDate, endDate, attendees } = req.body;
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ username: req.admin.username });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const bookingsCollection = db.collection('bookings');
+    const newBooking = {
+      userId: user._id,
+      tripId,
+      startDate,
+      endDate,
+      attendees,
+      createdAt: new Date()
+    };
+
+    const result = await bookingsCollection.insertOne(newBooking);
+    res.status(201).json({
+      message: 'Booking created successfully',
+      booking: {
+        ...newBooking,
+        _id: result.insertedId
+      }
+    });
+  } catch (error) {
+    console.error('Error creating booking:', error);
+    res.status(500).json({ message: 'Failed to create booking' });
   }
 });
 
