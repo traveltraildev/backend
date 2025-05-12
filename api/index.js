@@ -636,19 +636,25 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
   }
 });
 
+
 // GET /api/users/profile - Fetch user profile
 app.get('/api/users/profile', async (req, res) => {
   try {
-    const token = req.headers.authorization.split(' ')[1];
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authentication failed' });
+    }
+
+    const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
-    
+
     const usersCollection = db.collection('users');
     const user = await usersCollection.findOne({ username: decoded.username });
-    
+
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    
+
     const { password, ...userWithoutPassword } = user;
     res.json({ user: userWithoutPassword });
   } catch (error) {
@@ -656,6 +662,7 @@ app.get('/api/users/profile', async (req, res) => {
     res.status(401).json({ message: 'Authentication failed' });
   }
 });
+
 
 // PUT /api/users/profile - Update user profile
 app.put('/api/users/profile', requireAuth, async (req, res) => {
@@ -731,30 +738,27 @@ app.get('/api/bookings/history', requireAuth, async (req, res) => {
 
 
 app.post('/api/users/login', async (req, res) => {
-  const { username, password } = req.body;
-
   try {
+    const { username, password } = req.body;
     const usersCollection = db.collection('users');
     const user = await usersCollection.findOne({ username });
-    
+
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
-    
+
     const passwordMatch = bcrypt.compareSync(password, user.password);
     if (!passwordMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
-    
-    const token = jwt.sign(
-      { username: user.username, userId: user._id },
-      process.env.ADMIN_SECRET,
-      { expiresIn: '7d' }
-    );
-    
+
+    const token = jwt.sign({ username: user.username }, process.env.ADMIN_SECRET, {
+      expiresIn: '7d',
+    });
+
     res.json({ token });
   } catch (error) {
-    console.error('Error during user login:', error);
+    console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
