@@ -21,6 +21,10 @@ app.use(
     origin: [
       "http://localhost:3000",
       "https://traveltrail-frontend.vercel.app",
+      "https://trishelta.com",
+      "https://www.trishelta.com",
+      "http://trishelta.com",
+      "http://www.trishelta.com",
     ],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
