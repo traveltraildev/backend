@@ -25,6 +25,7 @@ app.use(
       "https://www.trishelta.com",
       "http://trishelta.com",
       "http://www.trishelta.com",
+      "https://trishelta.vercel.app/",
     ],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
