@@ -605,6 +605,7 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
       images: "array",
       themes: "array",
       amenities: "array",
+      destination: "string",
     };
 
     const errors = [];
