@@ -18,10 +18,7 @@ if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "https://traveltrail-frontend.vercel.app",
-    ],
+    origin: "*",
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   })
