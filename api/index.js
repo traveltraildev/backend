@@ -381,6 +381,7 @@ app.post("/api/trips", requireAuth, async (req, res) => {
       availability: newTripData.availability === "true",
       tripExpert: newTripData.tripExpert,
       destination: newTripData.destination,
+      isInternational: newTripData.isInternational,
     };
 
     const result = await tripsCollection.insertOne(tripDataToInsert);
