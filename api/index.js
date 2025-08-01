@@ -9,7 +9,7 @@ const jwt = require("jsonwebtoken");
 
 const app = express();
 const port = process.env.PORT || 5000;
-
+const saltRounds = 10; // Recommended value for security
 // Validate environment variables on startup
 if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
   console.error("FATAL ERROR: ADMIN_SECRET not configured or too short");
@@ -18,7 +18,15 @@ if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
 
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      "https://traveltrail-frontend.vercel.app",
+      "https://trishelta.com",
+      "https://www.trishelta.com",
+      "http://trishelta.com",
+      "http://www.trishelta.com",
+      "https://trishelta.vercel.app",
+    ],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -26,8 +34,16 @@ app.use(
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const client = new MongoClient(process.env.MONGODB_URI);
+const client = new MongoClient(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 let db;
+
+if (!process.env.MONGODB_URI) {
+  console.error("FATAL ERROR: MONGODB_URI is not defined in .env");
+  process.exit(1);
+}
 
 async function connectToDatabase() {
   try {
@@ -40,7 +56,7 @@ async function connectToDatabase() {
   }
 }
 
-connectToDatabase();
+// connectToDatabase();
 
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -180,7 +196,9 @@ app.get("/api/admin/check-auth", requireAuth, (req, res) => {
 app.get("/api/accommodations/filters/destinations", async (req, res) => {
   try {
     const accommodationsCollection = db.collection("accommodations");
-    const distinctDestinations = await accommodationsCollection.distinct("destination");
+    const distinctDestinations = await accommodationsCollection.distinct(
+      "destination"
+    );
     res.json(distinctDestinations);
   } catch (error) {
     console.error("Error fetching distinct destinations:", error);
@@ -206,7 +224,9 @@ app.get("/api/accommodations/filters/themes", async (req, res) => {
 app.get("/api/accommodations/filters/amenities", async (req, res) => {
   try {
     const accommodationsCollection = db.collection("accommodations");
-    const distinctAmenities = await accommodationsCollection.distinct("amenities");
+    const distinctAmenities = await accommodationsCollection.distinct(
+      "amenities"
+    );
     // Flatten the array in case amenities are stored as arrays
     const flattenedAmenities = distinctAmenities.flat();
     res.json(flattenedAmenities);
@@ -249,7 +269,7 @@ app.get("/api/trips/filters/inclusions", async (req, res) => {
   try {
     const tripsCollection = db.collection("trips");
     const distinctInclusions = await tripsCollection.distinct("inclusions");
-    // Flatten the array in case inclusions are stored as arrays
+    // Flatten the array in case inclusions are stored as arraysf
     const flattenedInclusions = distinctInclusions.flat();
     res.json(flattenedInclusions);
   } catch (error) {
@@ -361,6 +381,7 @@ app.post("/api/trips", requireAuth, async (req, res) => {
       availability: newTripData.availability === "true",
       tripExpert: newTripData.tripExpert,
       destination: newTripData.destination,
+      isInternational: newTripData.isInternational,
     };
 
     const result = await tripsCollection.insertOne(tripDataToInsert);
@@ -590,6 +611,7 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
       images: "array",
       themes: "array",
       amenities: "array",
+      destination: "string",
     };
 
     const errors = [];
@@ -618,6 +640,204 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Error adding accommodation:", error);
     res.status(500).json({ message: "Failed to add accommodation" });
+  }
+});
+
+// GET /api/users/profile - Fetch user profile
+app.get("/api/users/profile", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Authentication failed" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
+
+    const usersCollection = db.collection("users");
+    const user = await usersCollection.findOne({ username: decoded.username });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const { password, ...userWithoutPassword } = user;
+    res.json({ user: userWithoutPassword });
+  } catch (error) {
+    console.error("Error fetching profile:", error);
+    res.status(401).json({ message: "Authentication failed" });
+  }
+});
+
+// PUT /api/users/profile - Update user profile
+app.put("/api/users/profile", requireAuth, async (req, res) => {
+  try {
+    const usersCollection = db.collection("users");
+    const result = await usersCollection.updateOne(
+      { username: req.admin.username },
+      { $set: req.body }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ message: "Profile updated successfully" });
+  } catch (error) {
+    console.error("Error updating user profile:", error);
+    res.status(500).json({ message: "Failed to update user profile" });
+  }
+});
+
+// PUT /api/users/password - Change user password
+app.put("/api/users/password", requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const usersCollection = db.collection("users");
+    const user = await usersCollection.findOne({
+      username: req.admin.username,
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const passwordMatch = bcrypt.compareSync(currentPassword, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: "Current password is incorrect" });
+    }
+
+    // Use the defined saltRounds here
+    const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
+    await usersCollection.updateOne(
+      { username: req.admin.username },
+      { $set: { password: hashedPassword } }
+    );
+
+    res.json({ message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Error changing password:", error);
+    res.status(500).json({ message: "Failed to change password" });
+  }
+});
+
+// GET /api/bookings/history - Get user's booking history
+app.get("/api/bookings/history", requireAuth, async (req, res) => {
+  try {
+    const bookingsCollection = db.collection("bookings");
+    const bookings = await bookingsCollection
+      .find({
+        userId: new ObjectId(req.admin.userId),
+      })
+      .toArray();
+
+    // Fetch trip details for each booking
+    const tripsCollection = db.collection("trips");
+    const tripPromises = bookings.map(async (booking) => {
+      const trip = await tripsCollection.findOne({
+        _id: new ObjectId(booking.tripId),
+      });
+      return { ...booking, tripName: trip?.name };
+    });
+
+    const enrichedBookings = await Promise.all(tripPromises);
+    res.json(enrichedBookings);
+  } catch (error) {
+    console.error("Error fetching booking history:", error);
+    res.status(500).json({ message: "Failed to fetch booking history" });
+  }
+});
+
+app.post("/api/users/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const usersCollection = db.collection("users");
+    const user = await usersCollection.findOne({ username });
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    const passwordMatch = bcrypt.compareSync(password, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    const token = jwt.sign(
+      { username: user.username },
+      process.env.ADMIN_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    res.json({ token });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.post("/api/users/register", async (req, res) => {
+  const { username, password, email, name } = req.body;
+
+  try {
+    const usersCollection = db.collection("users");
+    const existingUser = await usersCollection.findOne({ username });
+
+    if (existingUser) {
+      return res.status(400).json({ message: "User already exists" });
+    }
+
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    const result = await usersCollection.insertOne({
+      username,
+      password: hashedPassword,
+      email,
+      name,
+      createdAt: new Date(),
+    });
+
+    res.status(201).json({ message: "User created successfully" });
+  } catch (error) {
+    console.error("Error during registration:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /api/bookings - Create a new booking
+app.post("/api/bookings", requireAuth, async (req, res) => {
+  try {
+    const { tripId, startDate, endDate, attendees } = req.body;
+    const usersCollection = db.collection("users");
+    const user = await usersCollection.findOne({
+      username: req.admin.username,
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const bookingsCollection = db.collection("bookings");
+    const newBooking = {
+      userId: user._id,
+      tripId,
+      startDate,
+      endDate,
+      attendees,
+      createdAt: new Date(),
+    };
+
+    const result = await bookingsCollection.insertOne(newBooking);
+    res.status(201).json({
+      message: "Booking created successfully",
+      booking: {
+        ...newBooking,
+        _id: result.insertedId,
+      },
+    });
+  } catch (error) {
+    console.error("Error creating booking:", error);
+    res.status(500).json({ message: "Failed to create booking" });
   }
 });
 
@@ -650,7 +870,22 @@ app.post("/api/sheets-proxy", async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Backend server listening on port ${port}`);
-});
+async function startServer() {
+  try {
+    await connectToDatabase();
+
+    app.listen(port, () => {
+      console.log(`Backend server listening on port ${port}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+// app.listen(port, () => {
+//   console.log(`Backend server listening on port ${port}`);
+// });
 // --- END OF FILE backend/server.js ---raries is already expected as JSON string from frontend
