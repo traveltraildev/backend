@@ -66,6 +66,9 @@ app.use((req, res, next) => {
 // JWT verification to use environment variable
 const requireAuth = (req, res, next) => {
   const authHeader = req.headers.authorization || "";
+
+  console.log('fdafdafdsafdasfdsafdsaf', authHeader)
+
   const [tokenType, token] = authHeader.split(" ");
 
   // Enhanced logging for debugging
@@ -91,10 +94,13 @@ const requireAuth = (req, res, next) => {
       clockTolerance: 15,
     });
 
-    console.log(`Valid token for admin: ${decoded.username}`);
+    console.log('fdsafdsafdsfadsfdsaf', decoded)
+
+
 
     // Attach decoded data to request object
     req.admin = {
+      userId: decoded.userId,
       username: decoded.username,
       iat: decoded.iat,
       exp: decoded.exp,
@@ -644,7 +650,7 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
 });
 
 // GET /api/users/profile - Fetch user profile
-app.get("/api/users/profile", async (req, res) => {
+app.get("/api/users/profile", requireAuth, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -723,11 +729,16 @@ app.put("/api/users/password", requireAuth, async (req, res) => {
 app.get("/api/bookings/history", requireAuth, async (req, res) => {
   try {
     const bookingsCollection = db.collection("bookings");
+
+    console.log('fdsafdasfdsafdsfa', req.admin)
+
+
     const bookings = await bookingsCollection
       .find({
         userId: new ObjectId(req.admin.userId),
       })
       .toArray();
+
 
     // Fetch trip details for each booking
     const tripsCollection = db.collection("trips");
@@ -762,7 +773,7 @@ app.post("/api/users/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { username: user.username },
+      { userId: user?._id, username: user.username },
       process.env.ADMIN_SECRET,
       {
         expiresIn: "7d",
