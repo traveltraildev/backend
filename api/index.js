@@ -16,17 +16,10 @@ if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
   process.exit(1);
 }
 
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "https://traveltrail-frontend.vercel.app",
-      "https://trishelta.com",
-      "https://www.trishelta.com",
-      "http://trishelta.com",
-      "http://www.trishelta.com",
-      "https://trishelta.vercel.app",
-    ],
+    origin: JSON.parse(process.env.CLIENT_URLS || '[]'),
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -67,7 +60,6 @@ app.use((req, res, next) => {
 const requireAuth = (req, res, next) => {
   const authHeader = req.headers.authorization || "";
 
-  console.log('fdafdafdsafdasfdsafdsaf', authHeader)
 
   const [tokenType, token] = authHeader.split(" ");
 
@@ -93,8 +85,6 @@ const requireAuth = (req, res, next) => {
       algorithms: ["HS256"],
       clockTolerance: 15,
     });
-
-    console.log('fdsafdsafdsfadsfdsaf', decoded)
 
 
 
@@ -729,8 +719,6 @@ app.put("/api/users/password", requireAuth, async (req, res) => {
 app.get("/api/bookings/history", requireAuth, async (req, res) => {
   try {
     const bookingsCollection = db.collection("bookings");
-
-    console.log('fdsafdasfdsafdsfa', req.admin)
 
 
     const bookings = await bookingsCollection
