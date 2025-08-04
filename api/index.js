@@ -16,17 +16,10 @@ if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
   process.exit(1);
 }
 
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "https://traveltrail-frontend.vercel.app",
-      "https://trishelta.com",
-      "https://www.trishelta.com",
-      "http://trishelta.com",
-      "http://www.trishelta.com",
-      "https://trishelta.vercel.app",
-    ],
+    origin: JSON.parse(process.env.CLIENT_URLS || '[]'),
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -66,6 +59,8 @@ app.use((req, res, next) => {
 // JWT verification to use environment variable
 const requireAuth = (req, res, next) => {
   const authHeader = req.headers.authorization || "";
+
+
   const [tokenType, token] = authHeader.split(" ");
 
   // Enhanced logging for debugging
@@ -91,10 +86,11 @@ const requireAuth = (req, res, next) => {
       clockTolerance: 15,
     });
 
-    console.log(`Valid token for admin: ${decoded.username}`);
+
 
     // Attach decoded data to request object
     req.admin = {
+      userId: decoded.userId,
       username: decoded.username,
       iat: decoded.iat,
       exp: decoded.exp,
@@ -644,7 +640,7 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
 });
 
 // GET /api/users/profile - Fetch user profile
-app.get("/api/users/profile", async (req, res) => {
+app.get("/api/users/profile", requireAuth, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -723,11 +719,14 @@ app.put("/api/users/password", requireAuth, async (req, res) => {
 app.get("/api/bookings/history", requireAuth, async (req, res) => {
   try {
     const bookingsCollection = db.collection("bookings");
+
+
     const bookings = await bookingsCollection
       .find({
         userId: new ObjectId(req.admin.userId),
       })
       .toArray();
+
 
     // Fetch trip details for each booking
     const tripsCollection = db.collection("trips");
@@ -762,7 +761,7 @@ app.post("/api/users/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { username: user.username },
+      { userId: user?._id, username: user.username },
       process.env.ADMIN_SECRET,
       {
         expiresIn: "7d",
