@@ -757,6 +757,124 @@ app.get("/api/bookings/history", requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/admin/bookings - Get all bookings for admin view
+app.get("/api/admin/bookings", requireAuth, async (req, res) => {
+  try {
+    const bookingsCollection = db.collection("bookings");
+
+    const allBookings = await bookingsCollection.aggregate([
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "userDetails"
+        }
+      },
+      {
+        $unwind: {
+          path: "$userDetails",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $lookup: {
+          from: "trips",
+          localField: "tripId",
+          foreignField: "_id",
+          as: "tripDetails"
+        }
+      },
+      {
+        $unwind: {
+          path: "$tripDetails",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          startDate: 1,
+          endDate: 1,
+          attendees: 1,
+          createdAt: 1,
+          status: { $ifNull: ["$status", "New"] },
+          annotations: { $ifNull: ["$annotations", []] },
+          "user.name": "$userDetails.name",
+          "user.email": "$userDetails.email",
+          "user.phone": "$userDetails.phone",
+          "trip.name": "$tripDetails.name",
+          "trip.destination": "$tripDetails.destination",
+        }
+      }
+    ]).sort({ createdAt: -1 }).toArray();
+
+    res.json({ success: true, data: allBookings });
+  } catch (error) {
+    console.error("Error fetching all bookings for admin:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch bookings" });
+  }
+});
+
+// PUT /api/admin/bookings/:bookingId/status - Update booking status
+app.put("/api/admin/bookings/:bookingId/status", requireAuth, async (req, res) => {
+  const { bookingId } = req.params;
+  const { status } = req.body;
+  
+  if (!status) {
+    return res.status(400).json({ success: false, message: "Status is required." });
+  }
+
+  try {
+    const result = await db.collection("bookings").updateOne(
+      { _id: new ObjectId(bookingId) },
+      { $set: { status: status } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Booking not found." });
+    }
+
+    res.json({ success: true, message: "Status updated successfully." });
+  } catch (error) {
+    console.error("Error updating booking status:", error);
+    res.status(500).json({ success: false, message: "Failed to update status." });
+  }
+});
+
+// POST /api/admin/bookings/:bookingId/annotations - Add a new annotation
+app.post("/api/admin/bookings/:bookingId/annotations", requireAuth, async (req, res) => {
+  const { bookingId } = req.params;
+  const { text } = req.body;
+  const adminUsername = req.admin.username;
+
+  if (!text) {
+    return res.status(400).json({ success: false, message: "Annotation text is required." });
+  }
+
+  const newAnnotation = {
+    text: text,
+    author: adminUsername || 'Admin',
+    timestamp: new Date()
+  };
+
+  try {
+    const result = await db.collection("bookings").updateOne(
+      { _id: new ObjectId(bookingId) },
+      { $push: { annotations: { $each: [newAnnotation], $position: 0 } } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Booking not found." });
+    }
+
+    res.json({ success: true, message: "Annotation added successfully.", annotation: newAnnotation });
+  } catch (error) {
+    console.error("Error adding annotation:", error);
+    res.status(500).json({ success: false, message: "Failed to add annotation." });
+  }
+});
+
 app.post("/api/users/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -831,11 +949,13 @@ app.post("/api/bookings", requireAuth, async (req, res) => {
     const bookingsCollection = db.collection("bookings");
     const newBooking = {
       userId: user._id,
-      tripId,
+      tripId: new ObjectId(tripId),
       startDate,
       endDate,
       attendees,
       createdAt: new Date(),
+      status: 'New', // Default status
+      annotations: [], // Initialize with empty array
     };
 
     const result = await bookingsCollection.insertOne(newBooking);
