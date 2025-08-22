@@ -275,7 +275,7 @@ app.get("/api/trips/filters/inclusions", async (req, res) => {
   try {
     const tripsCollection = db.collection("trips");
     const distinctInclusions = await tripsCollection.distinct("inclusions");
-    // Flatten the array in case inclusions are stored as arraysf
+    // Flatten the array in case inclusions are stored as arrays
     const flattenedInclusions = distinctInclusions.flat();
     res.json(flattenedInclusions);
   } catch (error) {
@@ -447,6 +447,9 @@ app.get("/api/accommodations", async (req, res) => {
         roomType: 1,
         maxOccupancy: 1,
         images: 1,
+        destination: 1,
+        themes: 1,
+        amenities: 1,
       }) // Optimize response
       .toArray();
 
