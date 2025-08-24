@@ -803,9 +803,9 @@ app.get("/api/admin/bookings", requireAuth, async (req, res) => {
           createdAt: 1,
           status: { $ifNull: ["$status", "New"] },
           annotations: { $ifNull: ["$annotations", []] },
-          "user.name": "$userDetails.name",
-          "user.email": "$userDetails.email",
-          "user.phone": "$userDetails.phone",
+          "user.name": { $ifNull: ["$userDetails.name", "$guestUser.name"] },
+          "user.email": { $ifNull: ["$userDetails.email", "$guestUser.email"] },
+          "user.phone": { $ifNull: ["$userDetails.phone", "$guestUser.phone"] },
           "trip.name": "$tripDetails.name",
           "trip.destination": "$tripDetails.destination",
         }
@@ -936,22 +936,56 @@ app.post("/api/users/register", async (req, res) => {
   }
 });
 
-// POST /api/bookings - Create a new booking
-app.post("/api/bookings", requireAuth, async (req, res) => {
+app.post("/api/newsletter/subscribe", async (req, res) => {
   try {
-    const { tripId, startDate, endDate, attendees } = req.body;
-    const usersCollection = db.collection("users");
-    const user = await usersCollection.findOne({
-      username: req.admin.username,
-    });
+    const { email } = req.body;
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const newsletterCollection = db.collection("newsletter");
+    const existingSubscriber = await newsletterCollection.findOne({ email });
+
+    if (existingSubscriber) {
+      return res.status(400).json({ message: "Email already subscribed" });
+    }
+
+    await newsletterCollection.insertOne({ email, createdAt: new Date() });
+
+    res.status(201).json({ message: "Successfully subscribed to newsletter" });
+  } catch (error) {
+    console.error("Error subscribing to newsletter:", error);
+    res.status(500).json({ message: "Failed to subscribe to newsletter" });
+  }
+});
+
+// POST /api/bookings - Create a new booking
+app.post("/api/bookings", async (req, res) => {
+  try {
+    const { tripId, startDate, endDate, attendees, name, email, phone } = req.body;
+    const authHeader = req.headers.authorization;
+
+    let userId = null;
+    let user = null;
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.split(" ")[1];
+      try {
+        const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
+        const usersCollection = db.collection("users");
+        user = await usersCollection.findOne({ _id: new ObjectId(decoded.userId) });
+        if (user) {
+          userId = user._id;
+        }
+      } catch (error) {
+        console.error("Error verifying token:", error);
+        // Token is invalid, proceed as a guest booking
+      }
     }
 
     const bookingsCollection = db.collection("bookings");
     const newBooking = {
-      userId: user._id,
       tripId: new ObjectId(tripId),
       startDate,
       endDate,
@@ -961,7 +995,30 @@ app.post("/api/bookings", requireAuth, async (req, res) => {
       annotations: [], // Initialize with empty array
     };
 
+    if (userId) {
+      newBooking.userId = userId;
+    } else {
+      newBooking.guestUser = { name, email, phone };
+    }
+
     const result = await bookingsCollection.insertOne(newBooking);
+
+    // After successful booking, send data to Google Apps Script
+    const scriptPayload = {
+      tripId,
+      startDate,
+      endDate,
+      attendees,
+      user: userId ? { name: user.name, email: user.email, phone: user.phone } : { name, email, phone },
+    };
+
+    fetch(`${process.env.BASE_URL}/api/sheets-proxy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(scriptPayload),
+    }).catch(error => console.error("Error sending data to Google Sheets:", error));
+
+
     res.status(201).json({
       message: "Booking created successfully",
       booking: {
@@ -972,6 +1029,17 @@ app.post("/api/bookings", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Error creating booking:", error);
     res.status(500).json({ message: "Failed to create booking" });
+  }
+});
+
+app.get("/api/newsletter/subscribers", requireAuth, async (req, res) => {
+  try {
+    const newsletterCollection = db.collection("newsletter");
+    const subscribers = await newsletterCollection.find({}).toArray();
+    res.json({ subscribers });
+  } catch (error) {
+    console.error("Error fetching newsletter subscribers:", error);
+    res.status(500).json({ message: "Failed to fetch newsletter subscribers" });
   }
 });
 
