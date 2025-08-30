@@ -6,6 +6,9 @@ const bodyParser = require("body-parser");
 const { MongoClient, ObjectId } = require("mongodb");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const xss = require('xss-clean');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -33,6 +36,10 @@ app.use(
 );
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// Security Middleware
+app.use(helmet());
+app.use(xss());
 
 const client = new MongoClient(process.env.MONGODB_URI, {
   useNewUrlParser: true,
@@ -124,8 +131,27 @@ const requireAuth = (req, res, next) => {
     });
   }
 };
+// Standardize error responses
+const standardErrorResponse = (res, error, context) => {
+  console.error(`Error in ${context}:`, error);
+  return res.status(500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'development' 
+      ? error.message 
+      : 'Internal server error',
+    code: error.code || 'SERVER_ERROR'
+  });
+};
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+  message:
+    "Too many login attempts from this IP, please try again after 15 minutes",
+});
+
 // Admin Login
-app.post("/api/admin/login", async (req, res) => {
+app.post("/api/admin/login", authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -185,12 +211,7 @@ app.post("/api/admin/login", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({
-      success: false,
-      code: "SERVER_ERROR",
-      message: "Internal server error",
-    });
+    return standardErrorResponse(res, error, "admin login");
   }
 });
 app.get("/api/admin/check-auth", requireAuth, (req, res) => {
@@ -207,8 +228,7 @@ app.get("/api/accommodations/filters/destinations", async (req, res) => {
     );
     res.json(distinctDestinations);
   } catch (error) {
-    console.error("Error fetching distinct destinations:", error);
-    res.status(500).json({ message: "Failed to fetch destinations" });
+    return standardErrorResponse(res, error, "fetching distinct destinations");
   }
 });
 
@@ -221,8 +241,7 @@ app.get("/api/accommodations/filters/themes", async (req, res) => {
     const flattenedThemes = distinctThemes.flat();
     res.json(flattenedThemes);
   } catch (error) {
-    console.error("Error fetching distinct themes:", error);
-    res.status(500).json({ message: "Failed to fetch themes" });
+    return standardErrorResponse(res, error, "fetching distinct themes");
   }
 });
 
@@ -237,8 +256,7 @@ app.get("/api/accommodations/filters/amenities", async (req, res) => {
     const flattenedAmenities = distinctAmenities.flat();
     res.json(flattenedAmenities);
   } catch (error) {
-    console.error("Error fetching distinct amenities:", error);
-    res.status(500).json({ message: "Failed to fetch amenities" });
+    return standardErrorResponse(res, error, "fetching distinct amenities");
   }
 });
 
@@ -251,8 +269,7 @@ app.get("/api/trips/filters/destinations", async (req, res) => {
     const distinctDestinations = await tripsCollection.distinct("destination");
     res.json(distinctDestinations);
   } catch (error) {
-    console.error("Error fetching distinct trip destinations:", error);
-    res.status(500).json({ message: "Failed to fetch trip destinations" });
+    return standardErrorResponse(res, error, "fetching distinct trip destinations");
   }
 });
 
@@ -265,8 +282,7 @@ app.get("/api/trips/filters/themes", async (req, res) => {
     const flattenedThemes = distinctThemes.flat();
     res.json(flattenedThemes);
   } catch (error) {
-    console.error("Error fetching distinct trip themes:", error);
-    res.status(500).json({ message: "Failed to fetch trip themes" });
+    return standardErrorResponse(res, error, "fetching distinct trip themes");
   }
 });
 
@@ -279,8 +295,7 @@ app.get("/api/trips/filters/inclusions", async (req, res) => {
     const flattenedInclusions = distinctInclusions.flat();
     res.json(flattenedInclusions);
   } catch (error) {
-    console.error("Error fetching distinct trip inclusions:", error);
-    res.status(500).json({ message: "Failed to fetch trip inclusions" });
+    return standardErrorResponse(res, error, "fetching distinct trip inclusions");
   }
 });
 
@@ -293,8 +308,38 @@ app.get("/api/trips/filters/exclusions", async (req, res) => {
     const flattenedExclusions = distinctExclusions.flat();
     res.json(flattenedExclusions);
   } catch (error) {
-    console.error("Error fetching distinct trip exclusions:", error);
-    res.status(500).json({ message: "Failed to fetch trip exclusions" });
+    return standardErrorResponse(res, error, "fetching distinct trip exclusions");
+  }
+});
+
+// GET endpoint to fetch trips by theme with pagination
+app.get("/api/trips/by-theme/:themeName", async (req, res) => {
+  try {
+    const { themeName } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const tripsCollection = db.collection("trips");
+
+    // Use $elemMatch for a more precise case-insensitive search on the array
+    const query = { themes: { $elemMatch: { $regex: `^${themeName}$`, $options: "i" } } };
+
+    const totalTrips = await tripsCollection.countDocuments(query);
+    const trips = await tripsCollection.find(query).skip(skip).limit(limit).toArray();
+
+    res.json({
+      success: true,
+      data: trips,
+      pagination: {
+        totalTrips,
+        totalPages: Math.ceil(totalTrips / limit),
+        currentPage: page,
+        limit,
+      },
+    });
+  } catch (error) {
+    return standardErrorResponse(res, error, "fetching trips by theme");
   }
 });
 
@@ -312,8 +357,7 @@ app.get("/api/cms/pages/:pageKey", async (req, res) => {
       res.status(404).json({ message: "Page content not found." });
     }
   } catch (error) {
-    console.error("Error fetching page content:", error);
-    res.status(500).json({ message: "Failed to fetch page content." });
+    return standardErrorResponse(res, error, "fetching page content");
   }
 });
 
@@ -341,8 +385,7 @@ app.put("/api/cms/pages/:pageKey", requireAuth, async (req, res) => {
     console.log("CMS Page Update result:", result); // More specific log message
     res.json({ message: "Page content updated successfully." });
   } catch (error) {
-    console.error("Error updating CMS page content:", error);
-    res.status(500).json({ message: "Failed to update page content." });
+    return standardErrorResponse(res, error, "updating CMS page content");
   }
 });
 
@@ -397,8 +440,7 @@ app.post("/api/trips", requireAuth, async (req, res) => {
       tripId: result.insertedId,
     });
   } catch (error) {
-    console.error("Error adding new trip package:", error);
-    res.status(500).json({ message: "Failed to add new trip package." });
+    return standardErrorResponse(res, error, "adding new trip package");
   }
 });
 
@@ -410,8 +452,7 @@ app.get("/api/trips", async (req, res) => {
     const trips = await tripsCollection.find({}).toArray();
     res.json(trips);
   } catch (error) {
-    console.error("Error fetching trip packages:", error);
-    res.status(500).json({ message: "Failed to fetch trip packages." });
+    return standardErrorResponse(res, error, "fetching trip packages");
   }
 });
 
@@ -430,8 +471,7 @@ app.get("/api/trips/:tripId", async (req, res) => {
       res.status(404).json({ message: "Trip package not found." });
     }
   } catch (error) {
-    console.error("Error fetching trip package:", error);
-    res.status(500).json({ message: "Failed to fetch trip package." });
+    return standardErrorResponse(res, error, "fetching trip package");
   }
 });
 // NEW API ENDPOINT - GET ACCOMMODATIONS
@@ -455,11 +495,7 @@ app.get("/api/accommodations", async (req, res) => {
 
     res.json({ success: true, data: accommodations });
   } catch (error) {
-    console.error("DB Error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Database operation failed",
-    });
+    return standardErrorResponse(res, error, "fetching accommodations");
   }
 });
 
@@ -500,8 +536,7 @@ app.put(
         modifiedCount: result.modifiedCount,
       });
     } catch (error) {
-      console.error("Error updating accommodation:", error);
-      res.status(500).json({ message: "Failed to update accommodation" });
+      return standardErrorResponse(res, error, "updating accommodation");
     }
   }
 );
@@ -537,8 +572,7 @@ app.put("/api/trips/:tripId", requireAuth, async (req, res) => {
       modifiedCount: result.modifiedCount,
     });
   } catch (error) {
-    console.error("Error updating trip:", error);
-    res.status(500).json({ message: "Failed to update trip" });
+    return standardErrorResponse(res, error, "updating trip");
   }
 });
 
@@ -557,8 +591,7 @@ app.delete("/api/trips/:tripId", requireAuth, async (req, res) => {
 
     res.json({ message: "Trip deleted successfully" });
   } catch (error) {
-    console.error("Error deleting trip:", error);
-    res.status(500).json({ message: "Failed to delete trip" });
+    return standardErrorResponse(res, error, "deleting trip");
   }
 });
 
@@ -578,8 +611,7 @@ app.get("/api/accommodations/:id", async (req, res) => {
       res.status(404).json({ message: "accommodation package not found." });
     }
   } catch (error) {
-    console.error("Error fetching accommodation package:", error);
-    res.status(500).json({ message: "Failed to fetch accommodation package." });
+    return standardErrorResponse(res, error, "fetching accommodation package");
   }
 });
 
@@ -597,10 +629,7 @@ app.delete("/api/accommodations/:id", requireAuth, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error("Delete error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to delete accommodation" });
+    return standardErrorResponse(res, error, "deleting accommodation");
   }
 });
 
@@ -647,8 +676,7 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
       insertedId: result.insertedId,
     });
   } catch (error) {
-    console.error("Error adding accommodation:", error);
-    res.status(500).json({ message: "Failed to add accommodation" });
+    return standardErrorResponse(res, error, "adding accommodation");
   }
 });
 
@@ -691,8 +719,7 @@ app.put("/api/users/profile", requireAuth, async (req, res) => {
     }
     res.json({ message: "Profile updated successfully" });
   } catch (error) {
-    console.error("Error updating user profile:", error);
-    res.status(500).json({ message: "Failed to update user profile" });
+    return standardErrorResponse(res, error, "updating user profile");
   }
 });
 
@@ -723,8 +750,7 @@ app.put("/api/users/password", requireAuth, async (req, res) => {
 
     res.json({ message: "Password changed successfully" });
   } catch (error) {
-    console.error("Error changing password:", error);
-    res.status(500).json({ message: "Failed to change password" });
+    return standardErrorResponse(res, error, "changing password");
   }
 });
 
@@ -755,17 +781,28 @@ app.get("/api/bookings/history", requireAuth, async (req, res) => {
     const enrichedBookings = await Promise.all(tripPromises);
     res.json(enrichedBookings);
   } catch (error) {
-    console.error("Error fetching booking history:", error);
-    res.status(500).json({ message: "Failed to fetch booking history" });
+    return standardErrorResponse(res, error, "fetching booking history");
   }
 });
 
-// GET /api/admin/bookings - Get all bookings for admin view
+// GET /api/admin/bookings - Get all bookings for admin view with pagination, sorting, and search
 app.get("/api/admin/bookings", requireAuth, async (req, res) => {
   try {
+    const {
+      page = 1,
+      limit = 10,
+      sortField = 'createdAt',
+      sortOrder = 'desc',
+      searchTerm = ''
+    } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const skip = (pageNum - 1) * limitNum;
+
     const bookingsCollection = db.collection("bookings");
 
-    const allBookings = await bookingsCollection.aggregate([
+    let pipeline = [
       {
         $lookup: {
           from: "users",
@@ -795,27 +832,68 @@ app.get("/api/admin/bookings", requireAuth, async (req, res) => {
         }
       },
       {
-        $project: {
-          _id: 1,
-          startDate: 1,
-          endDate: 1,
-          attendees: 1,
-          createdAt: 1,
-          status: { $ifNull: ["$status", "New"] },
-          annotations: { $ifNull: ["$annotations", []] },
-          "user.name": { $ifNull: ["$userDetails.name", "$guestUser.name"] },
-          "user.email": { $ifNull: ["$userDetails.email", "$guestUser.email"] },
-          "user.phone": { $ifNull: ["$userDetails.phone", "$guestUser.phone"] },
-          "trip.name": "$tripDetails.name",
-          "trip.destination": "$tripDetails.destination",
+        $addFields: {
+          "searchName": { $ifNull: ["$userDetails.name", "$guestUser.name"] },
+          "searchEmail": { $ifNull: ["$userDetails.email", "$guestUser.email"] },
+          "searchTripName": "$tripDetails.name"
         }
       }
-    ]).sort({ createdAt: -1 }).toArray();
+    ];
 
-    res.json({ success: true, data: allBookings });
+    if (searchTerm) {
+      const searchRegex = new RegExp(searchTerm, 'i');
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'searchName': searchRegex },
+            { 'searchEmail': searchRegex },
+            { 'searchTripName': searchRegex },
+          ]
+        }
+      });
+    }
+
+    pipeline.push({
+      $project: {
+        _id: 1,
+        startDate: 1,
+        endDate: 1,
+        attendees: 1,
+        createdAt: 1,
+        status: { $ifNull: ["$status", "New"] },
+        annotations: { $ifNull: ["$annotations", []] },
+        "user.name": "$searchName",
+        "user.email": "$searchEmail",
+        "user.phone": { $ifNull: ["$userDetails.phone", "$guestUser.phone"] },
+        "trip.name": "$searchTripName",
+        "trip.destination": "$tripDetails.destination",
+      }
+    });
+
+    const sortStage = { $sort: { [sortField]: sortOrder === 'asc' ? 1 : -1 } };
+    pipeline.push(sortStage);
+
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const totalResult = await bookingsCollection.aggregate(countPipeline).toArray();
+    const totalBookings = totalResult.length > 0 ? totalResult[0].total : 0;
+
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limitNum });
+
+    const bookings = await bookingsCollection.aggregate(pipeline).toArray();
+
+    res.json({
+      success: true,
+      data: bookings,
+      pagination: {
+        totalBookings,
+        totalPages: Math.ceil(totalBookings / limitNum),
+        currentPage: pageNum,
+        limit: limitNum,
+      },
+    });
   } catch (error) {
-    console.error("Error fetching all bookings for admin:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch bookings" });
+    return standardErrorResponse(res, error, "fetching all bookings for admin");
   }
 });
 
@@ -840,8 +918,7 @@ app.put("/api/admin/bookings/:bookingId/status", requireAuth, async (req, res) =
 
     res.json({ success: true, message: "Status updated successfully." });
   } catch (error) {
-    console.error("Error updating booking status:", error);
-    res.status(500).json({ success: false, message: "Failed to update status." });
+    return standardErrorResponse(res, error, "updating booking status");
   }
 });
 
@@ -873,12 +950,11 @@ app.post("/api/admin/bookings/:bookingId/annotations", requireAuth, async (req, 
 
     res.json({ success: true, message: "Annotation added successfully.", annotation: newAnnotation });
   } catch (error) {
-    console.error("Error adding annotation:", error);
-    res.status(500).json({ success: false, message: "Failed to add annotation." });
+    return standardErrorResponse(res, error, "adding annotation");
   }
 });
 
-app.post("/api/users/login", async (req, res) => {
+app.post("/api/users/login", authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     const usersCollection = db.collection("users");
@@ -903,8 +979,7 @@ app.post("/api/users/login", async (req, res) => {
 
     res.json({ token });
   } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ message: "Server error" });
+    return standardErrorResponse(res, error, "user login");
   }
 });
 
@@ -931,8 +1006,7 @@ app.post("/api/users/register", async (req, res) => {
 
     res.status(201).json({ message: "User created successfully" });
   } catch (error) {
-    console.error("Error during registration:", error);
-    res.status(500).json({ message: "Server error" });
+    return standardErrorResponse(res, error, "user registration");
   }
 });
 
@@ -955,8 +1029,7 @@ app.post("/api/newsletter/subscribe", async (req, res) => {
 
     res.status(201).json({ message: "Successfully subscribed to newsletter" });
   } catch (error) {
-    console.error("Error subscribing to newsletter:", error);
-    res.status(500).json({ message: "Failed to subscribe to newsletter" });
+    return standardErrorResponse(res, error, "subscribing to newsletter");
   }
 });
 
@@ -1027,8 +1100,7 @@ app.post("/api/bookings", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Error creating booking:", error);
-    res.status(500).json({ message: "Failed to create booking" });
+    return standardErrorResponse(res, error, "creating booking");
   }
 });
 
@@ -1038,8 +1110,7 @@ app.get("/api/newsletter/subscribers", requireAuth, async (req, res) => {
     const subscribers = await newsletterCollection.find({}).toArray();
     res.json({ subscribers });
   } catch (error) {
-    console.error("Error fetching newsletter subscribers:", error);
-    res.status(500).json({ message: "Failed to fetch newsletter subscribers" });
+    return standardErrorResponse(res, error, "fetching newsletter subscribers");
   }
 });
 
@@ -1067,8 +1138,7 @@ app.post("/api/sheets-proxy", async (req, res) => {
     const responseData = await gasResponse.json();
     res.status(gasResponse.status).json(responseData);
   } catch (error) {
-    console.error("Proxy error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    return standardErrorResponse(res, error, "sheets proxy");
   }
 });
 
@@ -1090,4 +1160,4 @@ startServer();
 // app.listen(port, () => {
 //   console.log(`Backend server listening on port ${port}`);
 // });
-// --- END OF FILE backend/server.js ---raries is already expected as JSON string from frontend
+// --- END OF FILE backend/server.js ---

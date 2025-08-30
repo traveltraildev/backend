@@ -1,7 +1,7 @@
-// --- START OF FILE backend/seedDB.js ---
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
-const cmsData = require('../traveltrail-frontend/src/data/cmsData').default; // Import cmsData
+const cmsData = require('../traveltrail-frontend/src/data/cmsData').default;
+const trips = require('../traveltrail-frontend/src/data/trips.js').default;
 
 async function seedDatabase() {
   const uri = process.env.MONGODB_URI;
@@ -10,16 +10,24 @@ async function seedDatabase() {
   try {
     await client.connect();
     const db = client.db("traveltrailCMS");
+    
+    // Seed CMS Pages
     const cmsPagesCollection = db.collection('cmsPages');
-
-    // Clear existing data (optional, but useful for reseeding)
     await cmsPagesCollection.deleteMany({});
     console.log("Cleared existing CMS pages collection.");
+    const pagesToInsert = Object.entries(cmsData).map(([key, value]) => ({ key, ...value }));
+    const cmsResult = await cmsPagesCollection.insertMany(pagesToInsert);
+    console.log(`Database seeded with ${cmsResult.insertedCount} CMS pages.`);
 
-    // Insert data from cmsData
-    const pagesToInsert = Object.entries(cmsData).map(([key, value]) => ({ key, ...value })); // Convert cmsData object to array of documents
-    const result = await cmsPagesCollection.insertMany(pagesToInsert);
-    console.log(`Database seeded with ${result.insertedCount} CMS pages.`);
+    // Seed Trips
+    const tripsCollection = db.collection('trips');
+    await tripsCollection.deleteMany({});
+    console.log("Cleared existing trips collection.");
+    // The trips data is an array of objects, but the last one is empty.
+    // I will filter out empty objects before inserting.
+    const tripsToInsert = trips.filter(trip => trip.name);
+    const tripsResult = await tripsCollection.insertMany(tripsToInsert);
+    console.log(`Database seeded with ${tripsResult.insertedCount} trips.`);
 
   } catch (error) {
     console.error("Error seeding database:", error);
@@ -29,4 +37,3 @@ async function seedDatabase() {
 }
 
 seedDatabase();
-// --- END OF FILE backend/seedDB.js ---
