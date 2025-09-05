@@ -1,21 +1,42 @@
-// --- START OF FILE backend/server.js ---
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const { MongoClient, ObjectId } = require("mongodb");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const xss = require('xss-clean');
+const { ClerkExpressRequireAuth, clerkClient } = require('@clerk/clerk-sdk-node');
 
 const app = express();
 const port = process.env.PORT || 5000;
-const saltRounds = 10; // Recommended value for security
+
+// Middleware to check for admin role. First try session claims, then fall back to user publicMetadata.
+const requireAdmin = async (req, res, next) => {
+  try {
+    // Prefer session claims if available
+    const sessionRole = req.auth?.sessionClaims?.metadata?.role;
+    if (sessionRole === 'admin') return next();
+
+    // If no session claim, fetch user from Clerk and check publicMetadata
+    const userId = req.auth?.userId;
+    if (userId) {
+      const user = await clerkClient.users.getUser(userId);
+      const userRole = user?.publicMetadata?.role || user?.public_metadata?.role;
+      if (userRole === 'admin') return next();
+    }
+
+    return res.status(403).json({ message: 'Forbidden: Admin access required.' });
+  } catch (error) {
+    console.error('Error checking admin role:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
 // Validate environment variables on startup
-if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 32) {
-  console.error("FATAL ERROR: ADMIN_SECRET not configured or too short");
+if (!process.env.CLERK_SECRET_KEY) {
+  console.error("FATAL ERROR: CLERK_SECRET_KEY not configured");
   process.exit(1);
 }
 
@@ -63,77 +84,14 @@ async function connectToDatabase() {
   }
 }
 
-// connectToDatabase();
-
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  console.log('[' + new Date().toISOString() + '] ' + req.method + ' ' + req.path);
   next();
 });
 
-// JWT verification to use environment variable
-const requireAuth = (req, res, next) => {
-  const authHeader = req.headers.authorization || "";
-
-  console.log('fdafdafdsafdasfdsafdsaf', authHeader)
-
-  const [tokenType, token] = authHeader.split(" ");
-
-  // Enhanced logging for debugging
-  console.log(
-    `Auth validation - Type: ${tokenType}, Token: ${token?.slice(0, 15)}...`
-  );
-
-  // Validate header format
-  if (!token || !["Bearer", "AdminToken"].includes(tokenType)) {
-    console.error("Invalid auth header format");
-    return res.status(401).json({
-      success: false,
-      code: "INVALID_AUTH_HEADER",
-      message:
-        "Authorization header must be: Bearer <token> or AdminToken <token>",
-    });
-  }
-
-  // JWT verification
-  try {
-    const decoded = jwt.verify(token, process.env.ADMIN_SECRET, {
-      algorithms: ["HS256"],
-      clockTolerance: 15,
-    });
-
-    console.log('fdsafdsafdsfadsfdsaf', decoded)
-
-
-
-    // Attach decoded data to request object
-    req.admin = {
-      userId: decoded.userId,
-      username: decoded.username,
-      iat: decoded.iat,
-      exp: decoded.exp,
-    };
-
-    next();
-  } catch (error) {
-    console.error(`JWT verification failed: ${error.message}`);
-
-    // Detailed error response
-    const errorCode = error.name.replace(/([A-Z])/g, "_$1").toUpperCase();
-    const errorMessage = error.expiredAt
-      ? "Session expired"
-      : "Invalid credentials";
-
-    res.status(401).json({
-      success: false,
-      code: errorCode,
-      message: errorMessage,
-      systemNote: `Token validation failed at ${new Date().toISOString()}`,
-    });
-  }
-};
 // Standardize error responses
 const standardErrorResponse = (res, error, context) => {
-  console.error(`Error in ${context}:`, error);
+  console.error('Error in ' + context + ':', error);
   return res.status(500).json({
     success: false,
     error: process.env.NODE_ENV === 'development' 
@@ -143,80 +101,6 @@ const standardErrorResponse = (res, error, context) => {
   });
 };
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message:
-    "Too many login attempts from this IP, please try again after 15 minutes",
-});
-
-// Admin Login
-app.post("/api/admin/login", authLimiter, async (req, res) => {
-  try {
-    const { username, password } = req.body;
-
-    // Enhanced validation
-    if (!username?.trim() || !password?.trim()) {
-      return res.status(400).json({
-        success: false,
-        code: "MISSING_CREDENTIALS",
-        message: "Username and password are required",
-      });
-    }
-
-    // Verify environment variables exist
-    if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD_HASH) {
-      console.error("Admin credentials not configured");
-      return res.status(500).json({
-        success: false,
-        code: "SERVER_ERROR",
-        message: "Server configuration error",
-      });
-    }
-
-    // Trim inputs for comparison
-    const cleanUsername = username.trim();
-    const cleanPassword = password.trim();
-
-    // Validate credentials
-    const usernameValid = cleanUsername === process.env.ADMIN_USERNAME;
-    const passwordValid = bcrypt.compareSync(
-      cleanPassword,
-      process.env.ADMIN_PASSWORD_HASH
-    );
-
-    if (!usernameValid || !passwordValid) {
-      return res.status(401).json({
-        success: false,
-        code: "INVALID_CREDENTIALS",
-        message: "Invalid username or password",
-      });
-    }
-
-    // Generate token
-    const token = jwt.sign(
-      { username: cleanUsername },
-      process.env.ADMIN_SECRET,
-      {
-        expiresIn: "2h",
-        algorithm: "HS256",
-      }
-    );
-
-    res.json({
-      success: true,
-      adminToken: token,
-      user: {
-        username: cleanUsername,
-      },
-    });
-  } catch (error) {
-    return standardErrorResponse(res, error, "admin login");
-  }
-});
-app.get("/api/admin/check-auth", requireAuth, (req, res) => {
-  res.json({ authenticated: true });
-});
 // API Endpoints
 
 // NEW API ENDPOINT - GET /api/accommodations/filters/destinations
@@ -322,8 +206,7 @@ app.get("/api/trips/by-theme/:themeName", async (req, res) => {
 
     const tripsCollection = db.collection("trips");
 
-    // Use $elemMatch for a more precise case-insensitive search on the array
-    const query = { themes: { $elemMatch: { $regex: `^${themeName}$`, $options: "i" } } };
+    const query = { themes: { $elemMatch: { $regex: '^' + themeName + '$', $options: "i" } } };
 
     const totalTrips = await tripsCollection.countDocuments(query);
     const trips = await tripsCollection.find(query).skip(skip).limit(limit).toArray();
@@ -362,7 +245,7 @@ app.get("/api/cms/pages/:pageKey", async (req, res) => {
 });
 
 // PUT endpoint to update CMS page content by key
-app.put("/api/cms/pages/:pageKey", requireAuth, async (req, res) => {
+app.put("/api/cms/pages/:pageKey", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   // PUT endpoint for CMS pages
   const pageKey = req.params.pageKey;
   const updatedContent = req.body;
@@ -390,7 +273,7 @@ app.put("/api/cms/pages/:pageKey", requireAuth, async (req, res) => {
 });
 
 // UPDATED API ENDPOINT - POST /api/trips - to add a new trip package (Handling FormData and converting strings to arrays in backend)
-app.post("/api/trips", requireAuth, async (req, res) => {
+app.post("/api/trips", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   // POST endpoint for adding trips
   const newTripData = req.body; // Trip data from frontend request body (FormData)
 
@@ -502,7 +385,8 @@ app.get("/api/accommodations", async (req, res) => {
 // PUT endpoint to update a ACCOMMODATIONS by ID
 app.put(
   "/api/accommodations/:accommodationId",
-  requireAuth,
+  ClerkExpressRequireAuth(),
+  requireAdmin,
   async (req, res) => {
     const accommodationId = req.params.accommodationId;
     const updatedData = req.body;
@@ -542,7 +426,7 @@ app.put(
 );
 
 // PUT endpoint to update a trip by ID
-app.put("/api/trips/:tripId", requireAuth, async (req, res) => {
+app.put("/api/trips/:tripId", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   const tripId = req.params.tripId;
   const updatedData = req.body;
 
@@ -577,7 +461,7 @@ app.put("/api/trips/:tripId", requireAuth, async (req, res) => {
 });
 
 // DELETE endpoint to remove a trip by ID
-app.delete("/api/trips/:tripId", requireAuth, async (req, res) => {
+app.delete("/api/trips/:tripId", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   const tripId = req.params.tripId;
 
   try {
@@ -615,7 +499,7 @@ app.get("/api/accommodations/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/accommodations/:id", requireAuth, async (req, res) => {
+app.delete("/api/accommodations/:id", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   try {
     const result = await db.collection("accommodations").deleteOne({
       _id: new ObjectId(req.params.id),
@@ -633,7 +517,7 @@ app.delete("/api/accommodations/:id", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/accommodations", requireAuth, async (req, res) => {
+app.post("/api/accommodations", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   try {
     const accommodationData = req.body;
 
@@ -655,11 +539,11 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
     const errors = [];
     Object.entries(requiredFields).forEach(([field, type]) => {
       if (!accommodationData[field]) {
-        errors.push(`Missing ${field}`);
+        errors.push('Missing ' + field);
       } else if (type === "array" && !Array.isArray(accommodationData[field])) {
-        errors.push(`${field} must be an array`);
+        errors.push(field + ' must be an array');
       } else if (typeof accommodationData[field] !== type && type !== "array") {
-        errors.push(`${field} must be ${type}`);
+        errors.push(field + ' must be ' + type);
       }
     });
 
@@ -681,21 +565,19 @@ app.post("/api/accommodations", requireAuth, async (req, res) => {
 });
 
 // GET /api/users/profile - Fetch user profile
-app.get("/api/users/profile", requireAuth, async (req, res) => {
+app.get("/api/users/profile", ClerkExpressRequireAuth(), async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Authentication failed" });
-    }
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
-
     const usersCollection = db.collection("users");
-    const user = await usersCollection.findOne({ username: decoded.username });
+    const user = await usersCollection.findOne({ clerkId: req.auth.userId });
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      // Create user if not exists
+      const newUser = {
+        clerkId: req.auth.userId,
+        createdAt: new Date(),
+      };
+      const result = await usersCollection.insertOne(newUser);
+      return res.json({ user: { ...newUser, _id: result.insertedId } });
     }
 
     const { password, ...userWithoutPassword } = user;
@@ -707,11 +589,11 @@ app.get("/api/users/profile", requireAuth, async (req, res) => {
 });
 
 // PUT /api/users/profile - Update user profile
-app.put("/api/users/profile", requireAuth, async (req, res) => {
+app.put("/api/users/profile", ClerkExpressRequireAuth(), async (req, res) => {
   try {
     const usersCollection = db.collection("users");
     const result = await usersCollection.updateOne(
-      { username: req.admin.username },
+      { clerkId: req.auth.userId },
       { $set: req.body }
     );
     if (result.matchedCount === 0) {
@@ -723,51 +605,16 @@ app.put("/api/users/profile", requireAuth, async (req, res) => {
   }
 });
 
-// PUT /api/users/password - Change user password
-app.put("/api/users/password", requireAuth, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const usersCollection = db.collection("users");
-    const user = await usersCollection.findOne({
-      username: req.admin.username,
-    });
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    const passwordMatch = bcrypt.compareSync(currentPassword, user.password);
-    if (!passwordMatch) {
-      return res.status(401).json({ message: "Current password is incorrect" });
-    }
-
-    // Use the defined saltRounds here
-    const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
-    await usersCollection.updateOne(
-      { username: req.admin.username },
-      { $set: { password: hashedPassword } }
-    );
-
-    res.json({ message: "Password changed successfully" });
-  } catch (error) {
-    return standardErrorResponse(res, error, "changing password");
-  }
-});
-
 // GET /api/bookings/history - Get user's booking history
-app.get("/api/bookings/history", requireAuth, async (req, res) => {
+app.get("/api/bookings/history", ClerkExpressRequireAuth(), async (req, res) => {
   try {
     const bookingsCollection = db.collection("bookings");
 
-    console.log('fdsafdasfdsafdsfa', req.admin)
-
-
     const bookings = await bookingsCollection
       .find({
-        userId: new ObjectId(req.admin.userId),
+        "user.clerkId": req.auth.userId,
       })
       .toArray();
-
 
     // Fetch trip details for each booking
     const tripsCollection = db.collection("trips");
@@ -786,7 +633,7 @@ app.get("/api/bookings/history", requireAuth, async (req, res) => {
 });
 
 // GET /api/admin/bookings - Get all bookings for admin view with pagination, sorting, and search
-app.get("/api/admin/bookings", requireAuth, async (req, res) => {
+app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   try {
     const {
       page = 1,
@@ -898,7 +745,7 @@ app.get("/api/admin/bookings", requireAuth, async (req, res) => {
 });
 
 // PUT /api/admin/bookings/:bookingId/status - Update booking status
-app.put("/api/admin/bookings/:bookingId/status", requireAuth, async (req, res) => {
+app.put("/api/admin/bookings/:bookingId/status", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   const { bookingId } = req.params;
   const { status } = req.body;
   
@@ -923,10 +770,10 @@ app.put("/api/admin/bookings/:bookingId/status", requireAuth, async (req, res) =
 });
 
 // POST /api/admin/bookings/:bookingId/annotations - Add a new annotation
-app.post("/api/admin/bookings/:bookingId/annotations", requireAuth, async (req, res) => {
+app.post("/api/admin/bookings/:bookingId/annotations", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   const { bookingId } = req.params;
   const { text } = req.body;
-  const adminUsername = req.admin.username;
+  const adminUsername = req.auth.userId; // Using clerk user id
 
   if (!text) {
     return res.status(400).json({ success: false, message: "Annotation text is required." });
@@ -951,62 +798,6 @@ app.post("/api/admin/bookings/:bookingId/annotations", requireAuth, async (req, 
     res.json({ success: true, message: "Annotation added successfully.", annotation: newAnnotation });
   } catch (error) {
     return standardErrorResponse(res, error, "adding annotation");
-  }
-});
-
-app.post("/api/users/login", authLimiter, async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const usersCollection = db.collection("users");
-    const user = await usersCollection.findOne({ username });
-
-    if (!user) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const passwordMatch = bcrypt.compareSync(password, user.password);
-    if (!passwordMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const token = jwt.sign(
-      { userId: user?._id, username: user.username },
-      process.env.ADMIN_SECRET,
-      {
-        expiresIn: "7d",
-      }
-    );
-
-    res.json({ token });
-  } catch (error) {
-    return standardErrorResponse(res, error, "user login");
-  }
-});
-
-app.post("/api/users/register", async (req, res) => {
-  const { username, password, email, name } = req.body;
-
-  try {
-    const usersCollection = db.collection("users");
-    const existingUser = await usersCollection.findOne({ username });
-
-    if (existingUser) {
-      return res.status(400).json({ message: "User already exists" });
-    }
-
-    const hashedPassword = bcrypt.hashSync(password, 10);
-
-    const result = await usersCollection.insertOne({
-      username,
-      password: hashedPassword,
-      email,
-      name,
-      createdAt: new Date(),
-    });
-
-    res.status(201).json({ message: "User created successfully" });
-  } catch (error) {
-    return standardErrorResponse(res, error, "user registration");
   }
 });
 
@@ -1045,9 +836,9 @@ app.post("/api/bookings", async (req, res) => {
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.split(" ")[1];
       try {
-        const decoded = jwt.verify(token, process.env.ADMIN_SECRET);
+        const decoded = jwt.verify(token, process.env.CLERK_SECRET_KEY);
         const usersCollection = db.collection("users");
-        user = await usersCollection.findOne({ _id: new ObjectId(decoded.userId) });
+        user = await usersCollection.findOne({ clerkId: decoded.sub });
         if (user) {
           userId = user._id;
         }
@@ -1085,7 +876,7 @@ app.post("/api/bookings", async (req, res) => {
       user: userId ? { name: user.name, email: user.email, phone: user.phone } : { name, email, phone },
     };
 
-    fetch(`${process.env.BASE_URL}/api/sheets-proxy`, {
+    fetch(process.env.BASE_URL + '/api/sheets-proxy', {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(scriptPayload),
@@ -1104,7 +895,7 @@ app.post("/api/bookings", async (req, res) => {
   }
 });
 
-app.get("/api/newsletter/subscribers", requireAuth, async (req, res) => {
+app.get("/api/newsletter/subscribers", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   try {
     const newsletterCollection = db.collection("newsletter");
     const subscribers = await newsletterCollection.find({}).toArray();
@@ -1147,7 +938,7 @@ async function startServer() {
     await connectToDatabase();
 
     app.listen(port, () => {
-      console.log(`Backend server listening on port ${port}`);
+      console.log('Backend server listening on port ' + port);
     });
   } catch (error) {
     console.error("Failed to start server:", error);
@@ -1156,8 +947,3 @@ async function startServer() {
 }
 
 startServer();
-
-// app.listen(port, () => {
-//   console.log(`Backend server listening on port ${port}`);
-// });
-// --- END OF FILE backend/server.js ---
