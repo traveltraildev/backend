@@ -7,6 +7,7 @@ const bcrypt = require("bcryptjs");
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const xss = require('xss-clean');
+const jwt = require('jsonwebtoken');
 const { ClerkExpressRequireAuth, clerkClient } = require('@clerk/clerk-sdk-node');
 
 const app = express();
@@ -38,6 +39,14 @@ const requireAdmin = async (req, res, next) => {
 if (!process.env.CLERK_SECRET_KEY) {
   console.error("FATAL ERROR: CLERK_SECRET_KEY not configured");
   process.exit(1);
+}
+
+if (!process.env.GOOGLE_SCRIPT_URL) {
+  console.warn("WARNING: GOOGLE_SCRIPT_URL not configured. Google Sheets integration will be disabled.");
+}
+
+if (!process.env.GOOGLE_SCRIPT_URL) {
+  console.warn("WARNING: GOOGLE_SCRIPT_URL not configured. Google Sheets integration will be disabled.");
 }
 
 app.use(
@@ -836,9 +845,9 @@ app.post("/api/bookings", async (req, res) => {
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.split(" ")[1];
       try {
-        const decoded = jwt.verify(token, process.env.CLERK_SECRET_KEY);
+        const session = await clerkClient.verifyToken(token);
         const usersCollection = db.collection("users");
-        user = await usersCollection.findOne({ clerkId: decoded.sub });
+        user = await usersCollection.findOne({ clerkId: session.sub });
         if (user) {
           userId = user._id;
         }
