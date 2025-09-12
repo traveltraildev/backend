@@ -573,55 +573,17 @@ app.post("/api/accommodations", ClerkExpressRequireAuth(), requireAdmin, async (
   }
 });
 
-// GET /api/users/profile - Fetch user profile
-app.get("/api/users/profile", ClerkExpressRequireAuth(), async (req, res) => {
-  try {
-    const usersCollection = db.collection("users");
-    const user = await usersCollection.findOne({ clerkId: req.auth.userId });
 
-    if (!user) {
-      // Create user if not exists
-      const newUser = {
-        clerkId: req.auth.userId,
-        createdAt: new Date(),
-      };
-      const result = await usersCollection.insertOne(newUser);
-      return res.json({ user: { ...newUser, _id: result.insertedId } });
-    }
 
-    const { password, ...userWithoutPassword } = user;
-    res.json({ user: userWithoutPassword });
-  } catch (error) {
-    console.error("Error fetching profile:", error);
-    res.status(401).json({ message: "Authentication failed" });
-  }
-});
-
-// PUT /api/users/profile - Update user profile
-app.put("/api/users/profile", ClerkExpressRequireAuth(), async (req, res) => {
-  try {
-    const usersCollection = db.collection("users");
-    const result = await usersCollection.updateOne(
-      { clerkId: req.auth.userId },
-      { $set: req.body }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    res.json({ message: "Profile updated successfully" });
-  } catch (error) {
-    return standardErrorResponse(res, error, "updating user profile");
-  }
-});
-
-// GET /api/bookings/history - Get user's booking history
+// GET /api/bookings/history - Get user's booking history (Clerk-only)
 app.get("/api/bookings/history", ClerkExpressRequireAuth(), async (req, res) => {
   try {
     const bookingsCollection = db.collection("bookings");
 
+    // Find bookings directly using the clerkId
     const bookings = await bookingsCollection
       .find({
-        "user.clerkId": req.auth.userId,
+        clerkId: req.auth.userId,
       })
       .toArray();
 
@@ -641,106 +603,115 @@ app.get("/api/bookings/history", ClerkExpressRequireAuth(), async (req, res) => 
   }
 });
 
-// GET /api/admin/bookings - Get all bookings for admin view with pagination, sorting, and search
+// GET /api/admin/bookings - Get all bookings for admin view (Clerk-based)
 app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 10,
-      sortField = 'createdAt',
-      sortOrder = 'desc',
-      searchTerm = ''
-    } = req.query;
-
+    const { page = 1, limit = 10, sortField = 'createdAt', sortOrder = 'desc', searchTerm = '' } = req.query;
     const pageNum = parseInt(page, 10);
     const limitNum = parseInt(limit, 10);
     const skip = (pageNum - 1) * limitNum;
 
     const bookingsCollection = db.collection("bookings");
 
-    let pipeline = [
-      {
-        $lookup: {
-          from: "users",
-          localField: "userId",
-          foreignField: "_id",
-          as: "userDetails"
-        }
-      },
-      {
-        $unwind: {
-          path: "$userDetails",
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $lookup: {
-          from: "trips",
-          localField: "tripId",
-          foreignField: "_id",
-          as: "tripDetails"
-        }
-      },
-      {
-        $unwind: {
-          path: "$tripDetails",
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $addFields: {
-          "searchName": { $ifNull: ["$userDetails.name", "$guestUser.name"] },
-          "searchEmail": { $ifNull: ["$userDetails.email", "$guestUser.email"] },
-          "searchTripName": "$tripDetails.name"
-        }
-      }
-    ];
+    // Base aggregation pipeline
+    let pipeline = [];
 
+    // Add a $lookup stage to join with trips collection
+    pipeline.push({
+      $lookup: {
+        from: 'trips',
+        localField: 'tripId',
+        foreignField: '_id',
+        as: 'tripInfo'
+      }
+    }, {
+      $unwind: { // Unwind the tripInfo array
+        path: '$tripInfo',
+        preserveNullAndEmptyArrays: true // Keep bookings even if trip is not found
+      }
+    });
+
+    // Match stage for search term
     if (searchTerm) {
-      const searchRegex = new RegExp(searchTerm, 'i');
+      const searchRegex = { $regex: searchTerm, $options: 'i' };
       pipeline.push({
         $match: {
           $or: [
-            { 'searchName': searchRegex },
-            { 'searchEmail': searchRegex },
-            { 'searchTripName': searchRegex },
+            { 'guestUser.name': searchRegex },
+            { 'guestUser.email': searchRegex },
+            { 'guestUser.phone': searchRegex },
+            { 'userDetails.name': searchRegex },
+            { 'userDetails.email': searchRegex },
+            { 'tripInfo.name': searchRegex }
           ]
         }
       });
     }
 
-    pipeline.push({
-      $project: {
-        _id: 1,
-        startDate: 1,
-        endDate: 1,
-        attendees: 1,
-        createdAt: 1,
-        status: { $ifNull: ["$status", "New"] },
-        annotations: { $ifNull: ["$annotations", []] },
-        "user.name": "$searchName",
-        "user.email": "$searchEmail",
-        "user.phone": { $ifNull: ["$userDetails.phone", "$guestUser.phone"] },
-        "trip.name": "$searchTripName",
-        "trip.destination": "$tripDetails.destination",
-      }
-    });
+    // Add a field for total attendees if sorting by attendees
+    if (sortField === 'attendees') {
+      pipeline.push({
+        $addFields: {
+          totalAttendees: { $add: [{ $ifNull: ["$attendees.adults", 0] }, { $ifNull: ["$attendees.children", 0] }] }
+        }
+      });
+    }
 
-    const sortStage = { $sort: { [sortField]: sortOrder === 'asc' ? 1 : -1 } };
-    pipeline.push(sortStage);
-
+    // Count total documents that match the filter
     const countPipeline = [...pipeline, { $count: 'total' }];
-    const totalResult = await bookingsCollection.aggregate(countPipeline).toArray();
-    const totalBookings = totalResult.length > 0 ? totalResult[0].total : 0;
+    const totalBookingsResult = await bookingsCollection.aggregate(countPipeline).toArray();
+    const totalBookings = totalBookingsResult.length > 0 ? totalBookingsResult[0].total : 0;
 
-    pipeline.push({ $skip: skip });
-    pipeline.push({ $limit: limitNum });
+    // Add sorting, skipping, and limiting to the main pipeline
+    const sortStage = { $sort: { [sortField === 'attendees' ? 'totalAttendees' : sortField]: sortOrder === 'asc' ? 1 : -1 } };
+    pipeline.push(sortStage, { $skip: skip }, { $limit: limitNum });
 
+    // Fetch paginated and sorted bookings
     const bookings = await bookingsCollection.aggregate(pipeline).toArray();
+
+    // Collect all unique Clerk IDs from the bookings
+    const clerkIds = [...new Set(bookings.map(b => b.clerkId).filter(id => id))];
+
+    // Fetch user details from Clerk in a single batch
+    let clerkUsers = [];
+    if (clerkIds.length > 0) {
+      clerkUsers = await clerkClient.users.getUserList({ userId: clerkIds });
+    }
+
+    // Create a map for easy lookup
+    const clerkUserMap = new Map(clerkUsers.map(u => [u.id, u]));
+
+    // Enrich bookings with user data
+    const enrichedBookings = bookings.map(booking => {
+      let userDetails = {};
+      if (booking.clerkId) {
+        const clerkUser = clerkUserMap.get(booking.clerkId);
+        userDetails = {
+          name: clerkUser ? `${clerkUser.firstName} ${clerkUser.lastName}`.trim() : 'Unknown User',
+          email: clerkUser ? clerkUser.emailAddresses.find(e => e.id === clerkUser.primaryEmailAddressId)?.emailAddress : 'No email',
+          phone: booking.guestUser?.phone || (clerkUser && clerkUser.phoneNumbers.length > 0 ? clerkUser.phoneNumbers[0].phoneNumber : 'No phone'),
+        };
+      } else if (booking.guestUser) {
+        userDetails = {
+          name: booking.guestUser.name,
+          email: booking.guestUser.email,
+          phone: booking.guestUser.phone,
+        };
+      }
+
+      return {
+        ...booking,
+        tripName: booking.tripInfo?.name || 'Unknown Trip',
+        userName: userDetails.name || 'Guest',
+        userEmail: userDetails.email || 'N/A',
+        userPhone: userDetails.phone || 'N/A',
+        value: booking.price,
+      };
+    });
 
     res.json({
       success: true,
-      data: bookings,
+      data: enrichedBookings,
       pagination: {
         totalBookings,
         totalPages: Math.ceil(totalBookings / limitNum),
@@ -748,6 +719,7 @@ app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (r
         limit: limitNum,
       },
     });
+
   } catch (error) {
     return standardErrorResponse(res, error, "fetching all bookings for admin");
   }
@@ -833,27 +805,28 @@ app.post("/api/newsletter/subscribe", async (req, res) => {
   }
 });
 
-// POST /api/bookings - Create a new booking
+// POST /api/bookings - Create a new booking (Clerk-only)
 app.post("/api/bookings", async (req, res) => {
   try {
-    const { tripId, startDate, endDate, attendees, name, email, phone } = req.body;
+    const { tripId, startDate, endDate, attendees, name, email, phone, price } = req.body;
     const authHeader = req.headers.authorization;
 
-    let userId = null;
-    let user = null;
+    let clerkId = null;
+    let userDetails = {}; // Use an object for user details
 
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.split(" ")[1];
       try {
         const session = await clerkClient.verifyToken(token);
-        const usersCollection = db.collection("users");
-        user = await usersCollection.findOne({ clerkId: session.sub });
-        if (user) {
-          userId = user._id;
-        }
+        clerkId = session.sub; // Get the Clerk ID directly from the verified token
+        
+        // Fetch user from Clerk to get name and email
+        const clerkUser = await clerkClient.users.getUser(clerkId);
+        userDetails.name = `${clerkUser.firstName} ${clerkUser.lastName}`.trim();
+        userDetails.email = clerkUser.emailAddresses.find(e => e.id === clerkUser.primaryEmailAddressId)?.emailAddress;
+
       } catch (error) {
-        console.error("Error verifying token:", error);
-        // Token is invalid, proceed as a guest booking
+        console.warn("Could not verify token for booking, proceeding as guest.", error.message);
       }
     }
 
@@ -863,13 +836,15 @@ app.post("/api/bookings", async (req, res) => {
       startDate,
       endDate,
       attendees,
+      price,
       createdAt: new Date(),
       status: 'New', // Default status
       annotations: [], // Initialize with empty array
     };
 
-    if (userId) {
-      newBooking.userId = userId;
+    if (clerkId) {
+      newBooking.clerkId = clerkId;
+      newBooking.userDetails = userDetails; // Store denormalized user details
     } else {
       newBooking.guestUser = { name, email, phone };
     }
@@ -882,7 +857,7 @@ app.post("/api/bookings", async (req, res) => {
       startDate,
       endDate,
       attendees,
-      user: userId ? { name: user.name, email: user.email, phone: user.phone } : { name, email, phone },
+      user: { name, email, phone }, // Assumes name, email, phone are in the body for both guests and logged-in users
     };
 
     fetch(process.env.BASE_URL + '/api/sheets-proxy', {
