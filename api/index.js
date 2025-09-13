@@ -377,13 +377,16 @@ app.get("/api/accommodations", async (req, res) => {
       .project({
         _id: 1,
         name: 1,
-        price: 1,
+        basePrice: "$price",
         roomType: 1,
         maxOccupancy: 1,
         images: 1,
         destination: 1,
         themes: 1,
         amenities: 1,
+        extraAdultFee: 1,
+        extraChildFee: 1,
+        baseOccupancy: 1,
       }) // Optimize response
       .toArray();
 
@@ -401,6 +404,12 @@ app.put(
   async (req, res) => {
     const accommodationId = req.params.accommodationId;
     const updatedData = req.body;
+
+    // Handle basePrice to price mapping
+    if (updatedData.basePrice) {
+      updatedData.price = updatedData.basePrice;
+      delete updatedData.basePrice;
+    }
 
     // Remove immutable fields
     delete updatedData._id; // Prevent updating MongoDB's _id
@@ -501,6 +510,8 @@ app.get("/api/accommodations/:id", async (req, res) => {
     });
 
     if (accommodation) {
+      accommodation.basePrice = accommodation.price;
+      delete accommodation.price;
       res.json(accommodation);
     } else {
       res.status(404).json({ message: "accommodation package not found." });
@@ -532,10 +543,18 @@ app.post("/api/accommodations", ClerkExpressRequireAuth(), requireAdmin, async (
   try {
     const accommodationData = req.body;
 
+    // Handle basePrice to price mapping
+    if (accommodationData.basePrice) {
+      accommodationData.price = accommodationData.basePrice;
+      delete accommodationData.basePrice;
+    }
+
     // Validation
     const requiredFields = {
       name: "string",
       price: "number",
+      extraAdultFee: "number",
+      extraChildFee: "number",
       roomType: "string",
       bedType: "string",
       maxOccupancy: "number",
@@ -549,12 +568,12 @@ app.post("/api/accommodations", ClerkExpressRequireAuth(), requireAdmin, async (
 
     const errors = [];
     Object.entries(requiredFields).forEach(([field, type]) => {
-      if (!accommodationData[field]) {
-        errors.push('Missing ' + field);
+      if (accommodationData[field] === undefined) {
+        errors.push(`Missing ${field}`);
       } else if (type === "array" && !Array.isArray(accommodationData[field])) {
-        errors.push(field + ' must be an array');
+        errors.push(`${field} must be an array`);
       } else if (typeof accommodationData[field] !== type && type !== "array") {
-        errors.push(field + ' must be ' + type);
+        errors.push(`${field} must be ${type}`);
       }
     });
 
@@ -633,6 +652,21 @@ app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (r
       }
     });
 
+    // Add a $lookup stage to join with accommodations collection
+    pipeline.push({
+        $lookup: {
+            from: 'accommodations',
+            localField: 'accommodationId',
+            foreignField: '_id',
+            as: 'accommodationInfo'
+        }
+    }, {
+        $unwind: {
+            path: '$accommodationInfo',
+            preserveNullAndEmptyArrays: true
+        }
+    });
+
     // Match stage for search term
     if (searchTerm) {
       const searchRegex = { $regex: searchTerm, $options: 'i' };
@@ -644,7 +678,8 @@ app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (r
             { 'guestUser.phone': searchRegex },
             { 'userDetails.name': searchRegex },
             { 'userDetails.email': searchRegex },
-            { 'tripInfo.name': searchRegex }
+            { 'tripInfo.name': searchRegex },
+            { 'accommodationInfo.name': searchRegex }
           ]
         }
       });
@@ -691,7 +726,7 @@ app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (r
         userDetails = {
           name: clerkUser ? `${clerkUser.firstName} ${clerkUser.lastName}`.trim() : 'Unknown User',
           email: clerkUser ? clerkUser.emailAddresses.find(e => e.id === clerkUser.primaryEmailAddressId)?.emailAddress : 'No email',
-          phone: booking.guestUser?.phone || (clerkUser && clerkUser.phoneNumbers.length > 0 ? clerkUser.phoneNumbers[0].phoneNumber : 'No phone'),
+          phone: booking.phone,
         };
       } else if (booking.guestUser) {
         userDetails = {
@@ -703,11 +738,12 @@ app.get("/api/admin/bookings", ClerkExpressRequireAuth(), requireAdmin, async (r
 
       return {
         ...booking,
-        tripName: booking.tripInfo?.name || 'Unknown Trip',
+        tripName: booking.tripInfo?.name || booking.accommodationInfo?.name || 'Unknown',
         userName: userDetails.name || 'Guest',
         userEmail: userDetails.email || 'N/A',
         userPhone: userDetails.phone || 'N/A',
         value: booking.price,
+        isGuest: !booking.clerkId
       };
     });
 
@@ -810,7 +846,7 @@ app.post("/api/newsletter/subscribe", async (req, res) => {
 // POST /api/bookings - Create a new booking (Clerk-only)
 app.post("/api/bookings", async (req, res) => {
   try {
-    const { tripId, startDate, endDate, attendees, name, email, phone, price } = req.body;
+    const { tripId, accommodationId, startDate, endDate, attendees, firstName, lastName, email, phone, price } = req.body;
     const authHeader = req.headers.authorization;
 
     let clerkId = null;
@@ -834,21 +870,27 @@ app.post("/api/bookings", async (req, res) => {
 
     const bookingsCollection = db.collection("bookings");
     const newBooking = {
-      tripId: new ObjectId(tripId),
       startDate,
       endDate,
       attendees,
       price,
+      phone,
       createdAt: new Date(),
       status: 'New', // Default status
       annotations: [], // Initialize with empty array
     };
 
+    if (tripId) {
+      newBooking.tripId = new ObjectId(tripId);
+    } else if (accommodationId) {
+      newBooking.accommodationId = new ObjectId(accommodationId);
+    }
+
     if (clerkId) {
       newBooking.clerkId = clerkId;
       newBooking.userDetails = userDetails; // Store denormalized user details
     } else {
-      newBooking.guestUser = { name, email, phone };
+      newBooking.guestUser = { name: `${firstName} ${lastName}`, email, phone };
     }
 
     const result = await bookingsCollection.insertOne(newBooking);
@@ -856,10 +898,11 @@ app.post("/api/bookings", async (req, res) => {
     // After successful booking, send data to Google Apps Script
     const scriptPayload = {
       tripId,
+      accommodationId,
       startDate,
       endDate,
       attendees,
-      user: { name, email, phone }, // Assumes name, email, phone are in the body for both guests and logged-in users
+      user: { name: `${firstName} ${lastName}`, email, phone }, // Assumes name, email, phone are in the body for both guests and logged-in users
     };
 
     fetch(process.env.BASE_URL + '/api/sheets-proxy', {
