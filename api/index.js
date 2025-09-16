@@ -4,7 +4,7 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const helmet = require('helmet');
 const xss = require('xss-clean');
-const { connectToDatabase } = require('../src/utils/db');
+const { connectToDatabase, connectMongoose } = require('../src/utils/db');
 
 // Import routes
 const { bookingRoutes, adminBookingRoutes } = require('../src/routes/booking.routes');
@@ -13,6 +13,7 @@ const accommodationRoutes = require('../src/routes/accommodation.routes');
 const cmsRoutes = require('../src/routes/cms.routes');
 const newsletterRoutes = require('../src/routes/newsletter.routes');
 const sheetsRoutes = require('../src/routes/sheets.routes');
+const wishlistRoutes = require('../src/routes/wishlist.routes'); // Import wishlist routes
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -67,11 +68,12 @@ app.use('/api/accommodations', accommodationRoutes);
 app.use('/api/cms', cmsRoutes);
 app.use('/api/newsletter', newsletterRoutes);
 app.use('/api', sheetsRoutes); // sheets-proxy is directly under /api
+app.use('/api/wishlist', wishlistRoutes); // Use wishlist routes
 
 // Start Server
 async function startServer() {
   try {
-    await connectToDatabase();
+    await Promise.all([connectToDatabase(), connectMongoose()]); // Connect to both databases
     app.listen(port, () => {
       console.log(`Backend server listening on port ${port}`);
     });

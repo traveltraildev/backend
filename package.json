@@ -23,6 +23,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.13.0",
+    "mongoose": "^8.18.1",
     "xss": "^1.0.15",
     "xss-clean": "^0.1.4"
   },
